@@ -1,0 +1,3 @@
+[submodule "VAR"]
+	path = VAR
+	url = https://github.com/FoundationVision/VAR
