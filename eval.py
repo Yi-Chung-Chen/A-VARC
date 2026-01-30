@@ -46,19 +46,19 @@ def make_json_serializable(obj):
 
 MODEL_DEPTH = 16  # TODO: =====> please specify MODEL_DEPTH <=====
 assert MODEL_DEPTH in {16, 20, 24, 30}
-BASE_LOG_DIR = "./classification"
+BASE_LOG_DIR = "./outputs"
 
-def compute_var_score(logits, gt_tokens, vae, args, **kwargs):
+def compute_log_likelihood(logits, gt_tokens, vae, args, **kwargs):
     """
     Compute log probabilities using standard VAR likelihood.
-    
+
     Args:
         logits: Model logits (B, L, V)
         gt_tokens: Ground truth tokens (B, L)
         vae: VAE model (unused for this score function)
         args: Arguments
         **kwargs: Additional arguments (unused for this score function)
-    
+
     Returns:
         gt_log_probs: Log probabilities for ground truth tokens (B, L)
     """
@@ -66,7 +66,7 @@ def compute_var_score(logits, gt_tokens, vae, args, **kwargs):
     gt_log_probs = log_probs.gather(dim=-1, index=gt_tokens.unsqueeze(-1)).squeeze(-1)  # (B, L)
     return gt_log_probs
 
-# Score function is hardcoded to VAR
+# Score function is hardcoded to log_likelihood
 
 def main():
     parser = argparse.ArgumentParser()
@@ -155,8 +155,8 @@ def main():
     if args.extra:
         LOG_DIR = BASE_LOG_DIR + f"_{args.extra}"
 
-    # Hardcoded score_func to "var"
-    score_func = "var"
+    # Hardcoded score_func to "log_likelihood"
+    score_func = "log_likelihood"
     run_folder = osp.join(LOG_DIR, dataset_name, score_func, name)
     os.makedirs(run_folder, exist_ok=True)
     
@@ -288,9 +288,9 @@ def main():
     logging.info("prepare finished.")
     var_model.cond_drop_rate = 0
 
-    # Hardcode score function to VAR
-    score_function = compute_var_score
-    logging.info("Using score function: var")
+    # Hardcode score function to log_likelihood
+    score_function = compute_log_likelihood
+    logging.info("Using score function: log_likelihood")
 
     ############################# 2. Sample with classifier-free guidance
 
@@ -596,7 +596,7 @@ def main():
                     "label": label.item(),
                     f"pred_d{args.depth}": pred_for_json,
                     "metric_type": "log_likelihood",
-                    "score_func": "var",
+                    "score_func": "log_likelihood",
                     "multi_stage": num_stages > 1,
                     "num_stages": num_stages
                 }
@@ -637,7 +637,7 @@ def main():
                     # Single-stage compatibility
                     data["num_scale"] = num_scale_list[0]
                     data["sequence_length"] = stage_results[0]['sequence_length']
-                    data["explanation"] = "Single-stage classification using var score function with sum aggregation."
+                    data["explanation"] = "Single-stage classification using log_likelihood score function with sum aggregation."
                 else:
                     # Multi-stage explanation
                     data["explanation"] = f"Multi-stage classification with {num_stages} stages. Each stage filters candidates progressively."
@@ -678,7 +678,7 @@ def main():
             logging.info(f"  Stage {stage_idx}: {stage_time:.2f} seconds ({stage_percentage:.1f}%)")
             logging.info(f"    Average Stage {stage_idx} time per sample: {stage_time/total:.3f} seconds")
 
-    metric_name = "Scores (var)"
+    metric_name = "Scores (log_likelihood)"
 
     logging.info(f"\nOverall Accuracies using {metric_name} for Classification:")
 
