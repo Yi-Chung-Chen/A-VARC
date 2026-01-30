@@ -1,10 +1,9 @@
 ################## 1. Download checkpoints and build models
 import os
 import os.path as osp
-import torch, torchvision
+import torch
 import random
 import numpy as np
-import PIL.Image as PImage, PIL.ImageDraw as PImageDraw
 import logging
 import sys
 import time
@@ -24,25 +23,6 @@ from datasets import build_dataset
 from torch.utils.data import DataLoader, Subset
 import tqdm
 import json
-import matplotlib.pyplot as plt
-
-import torch.nn.functional as F
-import torchvision.models as models
-import torch.nn as nn
-import clip
-from scipy.stats import gaussian_kde
-from scipy.signal import savgol_filter
-from scipy.ndimage import gaussian_filter1d
-from torchvision import transforms
-import numpy as np
-
-# PEFT imports for LoRA handling
-try:
-    from peft import PeftModel, PeftConfig, LoraConfig, get_peft_model
-    PEFT_AVAILABLE = True
-except ImportError:
-    print("Warning: PEFT not available. LoRA loading will be disabled.")
-    PEFT_AVAILABLE = False
 
 def make_json_serializable(obj):
     """
@@ -62,115 +42,6 @@ def make_json_serializable(obj):
         return [make_json_serializable(item) for item in obj]
     else:
         return obj
-
-def load_lora_model_with_peft(var_model, checkpoint_path, lora_config_path, device):
-    """Load LoRA model using PEFT library for proper merging."""
-    try:
-        # Load checkpoint
-        ckpt = torch.load(checkpoint_path, map_location='cpu')
-        
-        # Extract trainer state and args
-        trainer_state = ckpt.get('trainer', {})
-        args_state = ckpt.get('args', {})
-        
-        if hasattr(args_state, 'state_dict'):
-            args_dict = args_state.state_dict()
-        else:
-            args_dict = args_state
-            
-        # Try to load LoRA config from file
-        adapter_config_path = None
-        if lora_config_path and os.path.exists(lora_config_path):
-            potential_config_paths = [
-                os.path.join(lora_config_path, 'adapter_config.json'),
-                os.path.join(lora_config_path, 'peft-adapter-best', 'adapter_config.json'),
-                os.path.join(lora_config_path, 'peft-adapter-last', 'adapter_config.json'),
-            ]
-            
-            for config_path in potential_config_paths:
-                if os.path.exists(config_path):
-                    adapter_config_path = config_path
-                    logging.info(f"Found LoRA config at: {adapter_config_path}")
-                    break
-        
-        if adapter_config_path:
-            # Load config from file
-            lora_config = LoraConfig.from_pretrained(os.path.dirname(adapter_config_path))
-            logging.info(f"Loaded LoRA config: r={lora_config.r}, alpha={lora_config.lora_alpha}, targets={lora_config.target_modules}")
-        else:
-            # Fallback to manual config creation
-            logging.info("No adapter config found, creating LoRA config from checkpoint args...")
-            target_modules = ["fc1", "fc2", "proj", "head"]
-            if args_dict.get('lora_include_qkv', False):
-                target_modules.append("mat_qkv")
-            
-            lora_config = LoraConfig(
-                r=args_dict.get('lora_r', 8),
-                lora_alpha=args_dict.get('lora_alpha', 16),
-                lora_dropout=args_dict.get('lora_dropout', 0.1),
-                bias=args_dict.get('lora_bias', 'none'),
-                target_modules=target_modules,
-                task_type=None
-            )
-            logging.info(f"Created LoRA config: r={lora_config.r}, alpha={lora_config.lora_alpha}, targets={lora_config.target_modules}")
-        
-        # Wrap base model with PEFT
-        peft_model = get_peft_model(var_model, lora_config)
-        
-        # Load the state dict
-        if 'var_wo_ddp' in trainer_state:
-            var_state = trainer_state['var_wo_ddp']
-        else:
-            var_state = ckpt
-            
-        missing_keys, unexpected_keys = peft_model.load_state_dict(var_state, strict=False)
-        
-        # Merge LoRA weights and get clean model
-        merged_model = peft_model.merge_and_unload()
-        
-        logging.info(f"Successfully loaded and merged LoRA adaptations using PEFT")
-        if missing_keys:
-            logging.info(f"Missing keys: {len(missing_keys)} (expected for LoRA)")
-        if unexpected_keys:
-            logging.info(f"Unexpected keys: {len(unexpected_keys)} (expected for LoRA)")
-            
-        return merged_model
-        
-    except Exception as e:
-        logging.error(f"Failed to load LoRA with PEFT: {e}")
-        raise
-
-
-def load_lora_model_fallback(var_model, checkpoint_path, device):
-    """Fallback LoRA loading without PEFT - extracts base weights only."""
-    ckpt = torch.load(checkpoint_path, map_location='cpu')
-    
-    # Extract trainer state
-    trainer_state = ckpt.get('trainer', {})
-    if 'var_wo_ddp' in trainer_state:
-        var_state = trainer_state['var_wo_ddp']
-    else:
-        var_state = ckpt
-    
-    # Extract base weights only (no LoRA merging)
-    base_weights = {}
-    for key, value in var_state.items():
-        if key.startswith('base_model.model.'):
-            new_key = key[len('base_model.model.'):]
-            if '.base_layer.' in new_key:
-                clean_key = new_key.replace('.base_layer.', '.')
-                base_weights[clean_key] = value
-            elif '.lora_A.' not in new_key and '.lora_B.' not in new_key:
-                base_weights[new_key] = value
-    
-    missing_keys, unexpected_keys = var_model.load_state_dict(base_weights, strict=False)
-    logging.warning(f"Loaded {len(base_weights)} base weights (LoRA adaptations ignored due to missing PEFT)")
-    if missing_keys:
-        logging.info(f"Missing keys: {len(missing_keys)}")
-    if unexpected_keys:
-        logging.info(f"Unexpected keys: {len(unexpected_keys)}")
-    
-    return var_model
 
 
 MODEL_DEPTH = 16  # TODO: =====> please specify MODEL_DEPTH <=====
@@ -214,7 +85,6 @@ def main():
     parser.add_argument("--num_sample_list", type=str, default="1", help="Comma-separated list of samples for each stage (e.g., '1,1,3,5'). Each value >= 1.")
     parser.add_argument("--num_scale_list", type=str, default="10", help="Comma-separated list of scales for each stage (e.g., '3,6,8,10'). Each value in [1, len(patch_nums)].")
     parser.add_argument("--finetuned_weight", type=str, default=None)
-    parser.add_argument("--lora_weights", type=str, default=None, help="Name of LoRA weights to load (e.g., 'noise_aug' loads from lora_weights/var_d{depth}_{lora_weights}/)")
     parser.add_argument("--save_json", action='store_true', help="Save detailed JSON results for each sample")
     parser.add_argument("--save_likelihood", action='store_true', help="Save per-token log probabilities (N, L) for each image (only supported for single-stage classification)")
     parser.add_argument("--sigma", type=float, default=0.1, help="Variance of the Gaussian noise added to the neighbors")
@@ -267,17 +137,11 @@ def main():
     if any(x < 1 for x in k_list):
         raise ValueError(f"All values in k_list must be >= 1: {k_list}")
 
-    # Validate other arguments
-    if args.lora_weights and args.finetuned_weight:
-        raise ValueError("Cannot specify both --lora_weights and --finetuned_weight. Choose one.")
-
     name = f"var"
     if args.depth != 16:
         name += f"_d{args.depth}"
     if args.finetuned_weight is not None:
         name += f"_finetuned_{args.finetuned_weight}"
-    if args.lora_weights is not None:
-        name += f"_lora_{args.lora_weights}"
 
     # Add multi-stage configuration to name if not default
     default_candidates = [1]
@@ -421,16 +285,10 @@ def main():
             V=V, Cvae=32, ch=160, share_quant_resi=4,
             device=device, patch_nums=patch_nums, num_classes=1000, depth=args.depth, shared_aln=args.depth == 36
         )
-        if args.lora_weights:
-            model_ckpt = f"./lora_weights/var_d{args.depth}_{args.lora_weights}/ar-ckpt-best.pth"
-            lora_config_path = f"./lora_weights/var_d{args.depth}_{args.lora_weights}"
-            logging.info(f"Using LoRA weights: {args.lora_weights}")
-        elif args.finetuned_weight:
+        if args.finetuned_weight:
             model_ckpt = f"./finetuned_weights/VAR_d{args.depth}_{args.finetuned_weight}.pth"
-            lora_config_path = None
         else:
             model_ckpt = f"./weights/imagenet/var_d{args.depth}.pth"
-            lora_config_path = None
 
     # download checkpoint
     hf_home = "https://huggingface.co/FoundationVision/var/resolve/main"
@@ -438,43 +296,30 @@ def main():
     if not osp.exists(vae_ckpt):
         os.system(f"wget {hf_home}/{vae_ckpt}")
     if not osp.exists(model_ckpt):
-        if args.lora_weights:
-            raise FileNotFoundError(f"LoRA checkpoint not found at {model_ckpt}. "
-                                   f"Please ensure the LoRA weights '{args.lora_weights}' exist.")
-        else:
-            os.system(f"wget {hf_home}/{model_ckpt}")
+        os.system(f"wget {hf_home}/{model_ckpt}")
 
     # load checkpoints
     vae.load_state_dict(torch.load(vae_ckpt, map_location="cpu"), strict=True)
-    
-    # Handle LoRA model loading if specified
-    if args.lora_weights:
-        if not PEFT_AVAILABLE:
-            logging.warning("PEFT library not available. Using fallback LoRA loading (base weights only).")
-            var_model = load_lora_model_fallback(var_model, model_ckpt, device)
+
+    # Standard model loading
+    loaded_model_ckpt = torch.load(model_ckpt, map_location="cpu")
+    # Handle different checkpoint formats
+    if "trainer" in loaded_model_ckpt:
+        trainer_state = loaded_model_ckpt["trainer"]
+
+        if "var_wo_ddp" in trainer_state:
+            loaded_model_ckpt = trainer_state["var_wo_ddp"]
+            logging.info("Loading VAR model from 'trainer.var_wo_ddp' key (training checkpoint format)")
         else:
-            logging.info(f"Loading LoRA model from {model_ckpt} with config from {lora_config_path}")
-            var_model = load_lora_model_with_peft(var_model, model_ckpt, lora_config_path, device)
+            loaded_model_ckpt = trainer_state
+            logging.info("Loading VAR model from 'trainer' key")
+    elif "var_wo_ddp" in loaded_model_ckpt:
+        # Handle training checkpoint format
+        loaded_model_ckpt = loaded_model_ckpt["var_wo_ddp"]
+        logging.info("Loading VAR model from 'var_wo_ddp' key (training checkpoint format)")
     else:
-        # Standard model loading
-        loaded_model_ckpt = torch.load(model_ckpt, map_location="cpu")
-        # Handle different checkpoint formats
-        if "trainer" in loaded_model_ckpt:
-            trainer_state = loaded_model_ckpt["trainer"]
-            
-            if "var_wo_ddp" in trainer_state:
-                loaded_model_ckpt = trainer_state["var_wo_ddp"]
-                logging.info("Loading VAR model from 'trainer.var_wo_ddp' key (training checkpoint format)")
-            else:
-                loaded_model_ckpt = trainer_state
-                logging.info("Loading VAR model from 'trainer' key")
-        elif "var_wo_ddp" in loaded_model_ckpt:
-            # Handle training checkpoint format (e.g., from CIFAR-10 training)
-            loaded_model_ckpt = loaded_model_ckpt["var_wo_ddp"]
-            logging.info("Loading VAR model from 'var_wo_ddp' key (training checkpoint format)")
-        else:
-            logging.info("Loading VAR model directly (no nested structure)")
-        var_model.load_state_dict(loaded_model_ckpt, strict=True)
+        logging.info("Loading VAR model directly (no nested structure)")
+    var_model.load_state_dict(loaded_model_ckpt, strict=True)
 
     vae.eval(), var_model.eval()
     for p in vae.parameters():
