@@ -66,27 +66,20 @@ def compute_var_score(logits, gt_tokens, vae, args, **kwargs):
     gt_log_probs = log_probs.gather(dim=-1, index=gt_tokens.unsqueeze(-1)).squeeze(-1)  # (B, L)
     return gt_log_probs
 
-# Registry of score functions
-SCORE_FUNCTIONS = {
-    "var": compute_var_score,
-}
+# Score function is hardcoded to VAR
 
 def main():
     parser = argparse.ArgumentParser()
 
     # dataset args
     parser.add_argument("--dataset", type=str, default="imagenet", choices=["imagenet", "imagenet-a", "imagenetv2", "imagenet-r", "imagenet-sketch", "objectnet"], help="Dataset to use")
-    parser.add_argument("--split", type=str, default="test", choices=["train", "test"], help="Name of split")
     parser.add_argument("--depth", type=int, default=16)
     parser.add_argument("--batch_size", "-b", type=int, default=1)
-    parser.add_argument("--score_func", type=str, default="var", choices=list(SCORE_FUNCTIONS.keys()), help="Score function to use for analysis")
-    parser.add_argument("--test_num_classes", type=int, default=None, help="Number of classes to test (default: use all available classes)")
     parser.add_argument("--num_candidate_list", type=str, default="1", help="Comma-separated list of candidates surviving each stage (e.g., '1000,100,10,1'). Must be decreasing with last value = 1.")
     parser.add_argument("--num_sample_list", type=str, default="1", help="Comma-separated list of samples for each stage (e.g., '1,1,3,5'). Each value >= 1.")
     parser.add_argument("--num_scale_list", type=str, default="10", help="Comma-separated list of scales for each stage (e.g., '3,6,8,10'). Each value in [1, len(patch_nums)].")
-    parser.add_argument("--finetuned_weight", type=str, default=None)
+    parser.add_argument("--model_ckpt", type=str, default="./weights/imagenet/var_d16.pth", help="Path to VAR model checkpoint")
     parser.add_argument("--save_json", action='store_true', help="Save detailed JSON results for each sample")
-    parser.add_argument("--save_likelihood", action='store_true', help="Save per-token log probabilities (N, L) for each image (only supported for single-stage classification)")
     parser.add_argument("--sigma", type=float, default=0.1, help="Variance of the Gaussian noise added to the neighbors")
     parser.add_argument("--synset_subset_path", type=str, default=None, help="Path to synset subset file (e.g., imagenet100.txt)")
     parser.add_argument("--sample_per_class", type=int, default=None, help="Maximum number of samples per class (ensures balanced sampling)")
@@ -140,8 +133,6 @@ def main():
     name = f"var"
     if args.depth != 16:
         name += f"_d{args.depth}"
-    if args.finetuned_weight is not None:
-        name += f"_finetuned_{args.finetuned_weight}"
 
     # Add multi-stage configuration to name if not default
     default_candidates = [1]
@@ -161,12 +152,12 @@ def main():
     if args.synset_subset_path:
         subset_name = os.path.basename(args.synset_subset_path).replace('.txt', '')
         dataset_name += f"_{subset_name}"
-    if args.test_num_classes:
-        dataset_name += f"_{args.test_num_classes}"
     if args.extra:
         LOG_DIR = BASE_LOG_DIR + f"_{args.extra}"
 
-    run_folder = osp.join(LOG_DIR, dataset_name, args.score_func, name)
+    # Hardcoded score_func to "var"
+    score_func = "var"
+    run_folder = osp.join(LOG_DIR, dataset_name, score_func, name)
     os.makedirs(run_folder, exist_ok=True)
     
     # Setup standard logging instead of the custom PrintLogger
@@ -212,16 +203,8 @@ def main():
 
     # Only create JSON output folders if saving JSON files
     if args.save_json:
-        json_folder = osp.join(LOG_DIR, dataset_name, args.score_func, name, "json")
+        json_folder = osp.join(LOG_DIR, dataset_name, score_func, name, "json")
         os.makedirs(json_folder, exist_ok=True)
-
-    # Only create likelihood output folder if saving likelihood files
-    if args.save_likelihood:
-        if num_stages != 1:
-            raise ValueError("--save_likelihood is only supported for single-stage classification (num_stages=1)")
-        likelihood_folder = osp.join(LOG_DIR, dataset_name, args.score_func, name, "likelihood")
-        os.makedirs(likelihood_folder, exist_ok=True)
-        logging.info(f"Likelihood data will be saved to: {likelihood_folder}")
 
     # Build dataset
     data_path = f"./datasets"
@@ -236,39 +219,15 @@ def main():
     # Extract information from dataset attributes
     num_classes = dataset_val.num_classes
     class_indices = dataset_val.subset_indices  # Use subset_indices which contains filtered indices or falls back to class_indices
-    
-    # Set default test_num_classes to use all available classes
-    if args.test_num_classes is None:
-        args.test_num_classes = len(class_indices)
-    
-    # Validate that test_num_classes doesn't exceed available classes
-    if args.test_num_classes > len(class_indices):
-        raise ValueError(f"test_num_classes ({args.test_num_classes}) cannot exceed available classes ({len(class_indices)})")
-    # Adjust batch size to prevent OOM when test_classes is large
-    effective_test_classes = args.test_num_classes
-    adjusted_batch_size = max(args.batch_size // effective_test_classes, 1)
-    
-    # Create subset for efficient testing
-    if args.sample_per_class is not None and args.test_num_classes < len(class_indices):
-        # Balanced sampling case: can safely use test_num_classes for subset calculation
-        total_samples_needed = args.sample_per_class * args.test_num_classes
-        total_samples_available = len(dataset_val)
-        
-        if total_samples_needed > total_samples_available:
-            logging.warning(f"Requested {total_samples_needed} samples but only {total_samples_available} available. Using all available samples.")
-            total_samples_needed = total_samples_available
-        
-        # Create subset for efficient testing
-        dataset_subset = Subset(dataset_val, range(total_samples_needed))
-        ld_val = DataLoader(dataset_subset, num_workers=0, pin_memory=True, batch_size=adjusted_batch_size, shuffle=False, drop_last=False)
-        logging.info(f"Testing on {total_samples_needed} samples ({args.sample_per_class} per class × {args.test_num_classes} classes)")
-    else:
-        # Natural dataset case: use whole dataset as-is
-        total_samples_needed = len(dataset_val)
-        ld_val = DataLoader(dataset_val, num_workers=0, pin_memory=True, batch_size=adjusted_batch_size, shuffle=False, drop_last=False)
-        logging.info(f"Testing on whole dataset: {total_samples_needed} samples")
-    
-    logging.info(f"Adjusted batch size from {args.batch_size} to {adjusted_batch_size} to prevent OOM with {effective_test_classes} test classes")
+
+    # Adjust batch size to prevent OOM when testing many classes
+    adjusted_batch_size = max(args.batch_size // len(class_indices), 1)
+
+    # Create DataLoader
+    total_samples_needed = len(dataset_val)
+    ld_val = DataLoader(dataset_val, num_workers=0, pin_memory=True, batch_size=adjusted_batch_size, shuffle=False, drop_last=False)
+    logging.info(f"Testing on whole dataset: {total_samples_needed} samples across {len(class_indices)} classes")
+    logging.info(f"Adjusted batch size from {args.batch_size} to {adjusted_batch_size} to prevent OOM with {len(class_indices)} classes")
     
     
     # Validate num_scale range
@@ -278,17 +237,16 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     V = 4096
-    # Only build the model specified by args.depth
-    if "vae" not in globals() or "var" not in globals():
-        logging.info(f"Building VAE and VAR-d{args.depth} model")
-        vae, var_model = build_vae_var(
-            V=V, Cvae=32, ch=160, share_quant_resi=4,
-            device=device, patch_nums=patch_nums, num_classes=1000, depth=args.depth, shared_aln=args.depth == 36
-        )
-        if args.finetuned_weight:
-            model_ckpt = f"./finetuned_weights/VAR_d{args.depth}_{args.finetuned_weight}.pth"
-        else:
-            model_ckpt = f"./weights/imagenet/var_d{args.depth}.pth"
+    # Build the model
+    logging.info(f"Building VAE and VAR-d{args.depth} model")
+    vae, var_model = build_vae_var(
+        V=V, Cvae=32, ch=160, share_quant_resi=4,
+        device=device, patch_nums=patch_nums, num_classes=1000, depth=args.depth, shared_aln=args.depth == 36
+    )
+
+    # Use model checkpoint from args
+    model_ckpt = args.model_ckpt
+    logging.info(f"Using model checkpoint: {model_ckpt}")
 
     # download checkpoint
     hf_home = "https://huggingface.co/FoundationVision/var/resolve/main"
@@ -296,7 +254,7 @@ def main():
     if not osp.exists(vae_ckpt):
         os.system(f"wget {hf_home}/{vae_ckpt}")
     if not osp.exists(model_ckpt):
-        os.system(f"wget {hf_home}/{model_ckpt}")
+        os.system(f"wget {hf_home}/{osp.basename(model_ckpt)}")
 
     # load checkpoints
     vae.load_state_dict(torch.load(vae_ckpt, map_location="cpu"), strict=True)
@@ -330,9 +288,9 @@ def main():
     logging.info("prepare finished.")
     var_model.cond_drop_rate = 0
 
-    # Get the score function
-    score_function = SCORE_FUNCTIONS[args.score_func]
-    logging.info(f"Using score function: {args.score_func}")
+    # Hardcode score function to VAR
+    score_function = compute_var_score
+    logging.info("Using score function: var")
 
     ############################# 2. Sample with classifier-free guidance
 
@@ -366,26 +324,16 @@ def main():
         if total > 0:
             pbar.set_description(f"Acc: {100 * correct / total:.2f}% ({total}/{total_samples_needed})")
         
-        # Skip computation if output files (JSON and/or likelihood) already exist for this batch
-        if args.save_json or args.save_likelihood:
+        # Skip computation if output files (JSON) already exist for this batch
+        if args.save_json:
             current_batch_size = img_batch.shape[0]
             skip_batch = True
             for img_idx in range(current_batch_size):
                 global_idx = batch_idx * adjusted_batch_size + img_idx
-
-                # Check if JSON file exists if saving JSON
-                if args.save_json:
-                    json_fname = osp.join(json_folder, f"{global_idx}.json")
-                    if not osp.exists(json_fname):
-                        skip_batch = False
-                        break
-
-                # Check if likelihood file exists if saving likelihood
-                if args.save_likelihood:
-                    likelihood_fname = osp.join(likelihood_folder, f"{global_idx}.npz")
-                    if not osp.exists(likelihood_fname):
-                        skip_batch = False
-                        break
+                json_fname = osp.join(json_folder, f"{global_idx}.json")
+                if not osp.exists(json_fname):
+                    skip_batch = False
+                    break
 
             if skip_batch:
                 # All output files exist, skip computation but load predictions to update accuracy
@@ -394,18 +342,10 @@ def main():
                 batch_correct = 0
                 for img_idx in range(current_batch_size):
                     global_idx = batch_idx * adjusted_batch_size + img_idx
-
-                    # Load prediction from JSON if available, otherwise from likelihood
-                    if args.save_json:
-                        json_fname = osp.join(json_folder, f"{global_idx}.json")
-                        with open(json_fname, 'r') as f:
-                            data = json.load(f)
-                        pred = data['pred']
-                    elif args.save_likelihood:
-                        # Can't easily extract prediction from likelihood file, so skip accuracy update
-                        # This case shouldn't happen often since JSON is usually enabled
-                        pred = -1  # Placeholder, won't match any label
-
+                    json_fname = osp.join(json_folder, f"{global_idx}.json")
+                    with open(json_fname, 'r') as f:
+                        data = json.load(f)
+                    pred = data['pred']
                     label = label_batch[img_idx].item()
                     if pred == label:
                         batch_correct += 1
@@ -420,8 +360,8 @@ def main():
         current_batch_size = img_batch.shape[0]  # Handle last batch which might be smaller
         
         # List of classes to process for this sample.
-        # Unified logic: use class_indices for all datasets
-        test_classes = class_indices[:args.test_num_classes]
+        # Use all available class indices
+        test_classes = class_indices
         
         with torch.inference_mode():
             batch_start_time = time.time()
@@ -516,7 +456,6 @@ def main():
 
                 # Process in batches to avoid OOM
                 batch_log_likelihood_list = []
-                batch_per_token_log_probs_list = [] if args.save_likelihood else None
 
                 for batch_start in range(0, num_total_combinations_with_samples, args.batch_size):
                     batch_end = min(batch_start + args.batch_size, num_total_combinations_with_samples)
@@ -534,16 +473,8 @@ def main():
                     log_likelihood = gt_log_probs.sum(dim=-1)  # (batch_size_current,)
                     batch_log_likelihood_list.append(log_likelihood)
 
-                    # Collect per-token log probabilities if saving likelihood
-                    if args.save_likelihood:
-                        batch_per_token_log_probs_list.append(gt_log_probs.detach().cpu())
-
                 # Concatenate all batch results
                 all_log_likelihoods = torch.cat(batch_log_likelihood_list, dim=0)
-
-                # Concatenate per-token log probabilities if saving likelihood
-                if args.save_likelihood:
-                    all_per_token_log_probs = torch.cat(batch_per_token_log_probs_list, dim=0)  # (num_total_combinations_with_samples, L)
 
                 # Handle sample averaging if neighbors were used
                 if stage_num_samples > 1:
@@ -552,20 +483,8 @@ def main():
                     # Average over samples: (stage_num_samples, num_total_combinations) -> (num_total_combinations,)
                     all_log_likelihoods = all_log_likelihoods.mean(dim=0)
 
-                    # Handle per-token log probabilities averaging if saving likelihood
-                    if args.save_likelihood:
-                        # Reshape: (stage_num_samples * num_total_combinations, L) -> (stage_num_samples, num_total_combinations, L)
-                        all_per_token_log_probs = all_per_token_log_probs.reshape(stage_num_samples, num_total_combinations, -1)
-                        # Average over samples: (stage_num_samples, num_total_combinations, L) -> (num_total_combinations, L)
-                        all_per_token_log_probs = all_per_token_log_probs.mean(dim=0)
-
                 # Final reshape to (current_batch_size, num_candidates_this_stage)
                 stage_log_likelihood_tensor = all_log_likelihoods.reshape(current_batch_size, num_candidates_this_stage)
-
-                # Final reshape for per-token log probabilities if saving likelihood
-                if args.save_likelihood:
-                    # Reshape to (current_batch_size, num_candidates_this_stage, L)
-                    stage_per_token_log_probs = all_per_token_log_probs.reshape(current_batch_size, num_candidates_this_stage, -1)
 
                 # Store stage results
                 stage_end_time = time.time()
@@ -582,10 +501,6 @@ def main():
                     'candidates': current_candidates.cpu().tolist(),  # Store per-image candidates: (batch_size, num_candidates)
                     'processing_time': float(stage_batch_time)
                 }
-
-                # Store per-token log probabilities if saving likelihood
-                if args.save_likelihood:
-                    stage_result['per_token_log_probs'] = stage_per_token_log_probs  # Shape: (batch_size, num_candidates, L)
 
                 # Final predictions if this is the last stage
                 if stage_idx == num_stages - 1:
@@ -681,7 +596,7 @@ def main():
                     "label": label.item(),
                     f"pred_d{args.depth}": pred_for_json,
                     "metric_type": "log_likelihood",
-                    "score_func": args.score_func,
+                    "score_func": "var",
                     "multi_stage": num_stages > 1,
                     "num_stages": num_stages
                 }
@@ -722,7 +637,7 @@ def main():
                     # Single-stage compatibility
                     data["num_scale"] = num_scale_list[0]
                     data["sequence_length"] = stage_results[0]['sequence_length']
-                    data["explanation"] = f"Single-stage classification using {args.score_func} score function with sum aggregation."
+                    data["explanation"] = "Single-stage classification using var score function with sum aggregation."
                 else:
                     # Multi-stage explanation
                     data["explanation"] = f"Multi-stage classification with {num_stages} stages. Each stage filters candidates progressively."
@@ -748,31 +663,6 @@ def main():
                 with open(json_fname, "w") as f:
                     json.dump(json_safe_data, f, indent=4)
 
-        # Save likelihood files only if requested
-        if args.save_likelihood:
-            # Get per-token log probabilities from the last (and only) stage
-            stage_per_token_log_probs_batch = stage_results[0]['per_token_log_probs']  # Shape: (current_batch_size, N, L)
-            stage_candidates = stage_results[0]['candidates']  # List of candidates per image: (batch_size, N)
-
-            for img_idx in range(current_batch_size):
-                global_idx = batch_idx * adjusted_batch_size + img_idx
-                likelihood_fname = osp.join(likelihood_folder, f"{global_idx}.npz")
-
-                # Extract data for this image
-                per_token_log_probs = stage_per_token_log_probs_batch[img_idx]  # Shape: (N, L)
-                candidates = stage_candidates[img_idx]  # List of N candidate class indices
-                gt_label = label_batch[img_idx].item()
-                seq_length = stage_results[0]['sequence_length']
-
-                # Save as compressed numpy archive
-                np.savez_compressed(
-                    likelihood_fname,
-                    log_likelihood=per_token_log_probs.numpy(),  # Shape: (N, L)
-                    gt_label=gt_label,
-                    candidates=np.array(candidates),  # Shape: (N,)
-                    sequence_length=seq_length
-                )
-
     # End timing and log runtime
     end_time = time.time()
     total_runtime = end_time - start_time
@@ -788,7 +678,7 @@ def main():
             logging.info(f"  Stage {stage_idx}: {stage_time:.2f} seconds ({stage_percentage:.1f}%)")
             logging.info(f"    Average Stage {stage_idx} time per sample: {stage_time/total:.3f} seconds")
 
-    metric_name = f"Scores ({args.score_func})"
+    metric_name = "Scores (var)"
 
     logging.info(f"\nOverall Accuracies using {metric_name} for Classification:")
 
