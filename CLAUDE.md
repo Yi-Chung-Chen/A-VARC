@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The project consists of:
 - **VAR submodule**: The upstream VAR model implementation (from FoundationVision/VAR)
-- **var_classification.py**: Main classification script that uses VAR models as generative classifiers
+- **eval.py**: Main inference/evaluation script that uses VAR models as generative classifiers
 
 ### Key Concept
 
@@ -27,7 +27,7 @@ The VAR (Visual Autoregressive) model performs "next-scale prediction" rather th
 
 ### Classification Pipeline
 
-**var_classification.py** implements multi-stage classification:
+**eval.py** implements multi-stage classification:
 
 1. **Image Encoding**: VQ-VAE encodes input image → discrete tokens at all scales
 2. **Stage-by-stage Filtering**:
@@ -59,7 +59,7 @@ The VAR (Visual Autoregressive) model performs "next-scale prediction" rather th
 - `misc.py`: Auto-resume, logging utilities
 
 **Classification-specific**:
-- `var_classification.py`: Standalone classification script with multi-stage support
+- `eval.py`: Standalone inference/evaluation script with multi-stage support
 
 ## Common Commands
 
@@ -67,30 +67,22 @@ The VAR (Visual Autoregressive) model performs "next-scale prediction" rather th
 
 Run classification on ImageNet validation set:
 ```bash
-python var_classification.py \
+python eval.py \
   --dataset imagenet \
   --depth 16 \
   --batch_size 1 \
-  --score_func var
+  --model_ckpt ./weights/imagenet/var_d16.pth
 ```
 
 Multi-stage classification with progressive filtering:
 ```bash
-python var_classification.py \
+python eval.py \
   --dataset imagenet \
   --depth 16 \
   --num_candidate_list "1000,100,10,1" \
   --num_sample_list "1,1,3,5" \
   --num_scale_list "3,6,8,10" \
   --save_json
-```
-
-Using LoRA fine-tuned weights:
-```bash
-python var_classification.py \
-  --depth 16 \
-  --lora_weights noise_aug \
-  --dataset imagenet
 ```
 
 ### Training (VAR submodule)
@@ -117,11 +109,9 @@ datasets/imagenet/
 
 ## Important Implementation Details
 
-### Score Functions
+### Score Function
 
-The `--score_func` argument selects the likelihood computation method (currently only `var` is implemented):
-- **var**: Standard VAR log-likelihood using cross-entropy loss
-- Additional score functions can be registered in `SCORE_FUNCTIONS` dict
+The score function is hardcoded to `log_likelihood` in `eval.py`: standard VAR log-likelihood computed via log-softmax over the model's logits, gathered at the ground-truth token indices.
 
 ### Multi-Stage Classification
 
@@ -135,31 +125,23 @@ Example: `[1000,100,1]` candidates, `[1,1,5]` samples, `[3,6,10]` scales
 - Stage 1: 100 classes, 1 sample, 6 scales (medium filtering)
 - Stage 2: 1 class, 5 samples, 10 scales (final prediction with augmentation)
 
-### LoRA Model Loading
+### Model Checkpoint Loading
 
-When using `--lora_weights`:
-- Expects checkpoint at `./lora_weights/var_d{depth}_{lora_weights}/ar-ckpt-best.pth`
-- Requires PEFT library for proper LoRA merging (`pip install peft`)
-- Falls back to base weights only if PEFT unavailable
+Pass the checkpoint path via `--model_ckpt`. The code handles multiple checkpoint formats:
+- Standard VAR checkpoints: direct state dict
+- Training checkpoints: nested under `trainer.var_wo_ddp`
+
+VAE weights (`vae_ch160v4096z32.pth`) and the VAR checkpoint are auto-downloaded from HuggingFace if not present locally.
 
 ### Output Formats
 
-With `--save_json`: Saves detailed per-image results to `classification_{extra}/{dataset}/{score_func}/{name}/json/{idx}.json`
+With `--save_json`: Saves detailed per-image results to `outputs_{extra}/{dataset}/log_likelihood/{name}/json/{idx}.json`
 - Includes per-stage log-likelihoods, candidates, and predictions
 - Contains configuration metadata for reproducibility
 
-With `--save_likelihood`: Saves per-token log-probabilities as `likelihood/{idx}.npz`
-- Only supported for single-stage classification
-- Format: `log_likelihood` (N, L), `candidates` (N,), `gt_label`, `sequence_length`
-
 ## Common Gotchas
 
-1. **Checkpoint Format Variations**: The code handles multiple checkpoint formats:
-   - Standard VAR checkpoints: direct state dict
-   - Training checkpoints: nested under `trainer.var_wo_ddp`
-   - LoRA checkpoints: PEFT wrapped with `base_model.model.` prefix
-
-2. **Batch Size with Many Classes**: Effective batch size is `batch_size // test_num_classes` to prevent OOM when testing many classes simultaneously
+1. **Batch Size with Many Classes**: Effective batch size is adjusted to `batch_size // num_classes` to prevent OOM when testing many classes simultaneously
 
 3. **ObjectNet Evaluation**: Requires special handling with `class_idx_map` to translate ImageNet predictions to ObjectNet class space
 
@@ -177,6 +159,5 @@ Core requirements (see VAR/requirements.txt):
 Optional for performance:
 - flash-attn (for faster attention)
 - xformers (alternative fast attention)
-- peft (for LoRA fine-tuning support)
 
 Additional datasets require installing their specific packages.
