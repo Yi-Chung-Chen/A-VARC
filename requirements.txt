@@ -1,0 +1,19 @@
+# Core - install PyTorch first:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# then install the rest:
+#   pip install -r requirements.txt
+
+numpy
+Pillow
+tqdm
+huggingface_hub
+transformers
+typed-argument-parser
+git+https://github.com/modestyachts/ImageNetV2_pytorch.git
+
+# Optional: faster attention (install separately after torch)
+# xformers
+# flash-attn
+
+# Optional: ObjectNet evaluation only
+# objectnet

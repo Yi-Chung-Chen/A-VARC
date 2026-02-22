@@ -12,7 +12,61 @@ We investigate generative classifiers built upon recent advances in visual autor
 
 ## Installation
 
-Coming soon.
+### 1. Clone the repository
+
+```bash
+git clone --recurse-submodules https://github.com/Yi-Chung-Chen/A-VARC.git
+cd A-VARC
+```
+
+If you already cloned without `--recurse-submodules`, initialize the VAR submodule manually:
+
+```bash
+git submodule update --init --recursive
+```
+
+### 2. Set up the environment
+
+**Option A — conda (recommended, fully reproducible):**
+
+```bash
+conda env create -f environment.yml
+conda activate a-varc
+```
+
+**Option B — pip only:**
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+pip install -r requirements.txt
+```
+
+> Adjust the CUDA version (`cu126`) to match your system. See [PyTorch Get Started](https://pytorch.org/get-started/locally/) for other options.
+
+### 3. Model weights
+
+VAR model checkpoints and the VQ-VAE weights (`vae_ch160v4096z32.pth`) are **automatically downloaded** from HuggingFace on first run. You can also place pre-downloaded checkpoints under `./weights/`:
+
+```
+weights/
+  imagenet/
+    var_d16.pth
+    var_d20.pth
+    ...
+```
+
+### 4. Dataset setup
+
+Place the ImageNet validation set under `./datasets/`:
+
+```
+datasets/imagenet/
+  val/
+    n01440764/
+      ILSVRC2012_val_00000293.JPEG ...
+```
+
+Other supported datasets (ImageNetV2, ObjectNet) follow the same `./datasets/<dataset>/` convention.
 
 ## Quick Start
 
