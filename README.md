@@ -1,14 +1,26 @@
-# Your VAR Model is Secretly an Efficient and Explainable Generative Classifier
-
-[Paper](https://openreview.net/pdf?id=zFF0WRMjlp)
-
-**Authors:** Yi-Chung Chen, David I. Inouye, Jing Gao — Purdue University
+# A-VARC
+[ICLR 2026] Your VAR Model is Secretly an Efficient and Explainable Generative Classifier
 
 ![Banner](assets/banner.jpg)
 
+<a href="https://openreview.net/pdf?id=zFF0WRMjlp"><img src="https://img.shields.io/badge/OpenReview-Paper-A42C25.svg" alt="OpenReview"></a>
+
+> **Your VAR Model is Secretly an Efficient and Explainable Generative Classifier**
+> <br>
+> [Yi-Chung Chen<sup>1</sup>](https://yi-chung-chen.github.io),
+> [David I. Inouye<sup>1</sup>](https://www.davidinouye.com/),
+> [Jing Gao<sup>1</sup>](https://engineering.purdue.edu/~jinggao/)
+> <br>
+> <sup>1</sup> Elmore Family School of Electrical and Computer Engineering, Purdue University
+
 ## Overview
 
-We investigate generative classifiers built upon recent advances in visual autoregressive (VAR) modeling. Owing to their tractable likelihood, VAR-based generative classifiers enable significantly more efficient inference compared to diffusion-based counterparts. Building on this foundation, we introduce the **Adaptive VAR Classifier+ (A-VARC+)**, which further improves accuracy while reducing computational cost, substantially enhancing practical usability.
+**Can a generative model classify images — efficiently?**
+
+We show that Visual Autoregressive (VAR) models make surprisingly strong generative classifiers. Thanks to tractable likelihoods, they are far faster than diffusion-based counterparts at inference time. We further introduce **A-VARC+**, which boosts accuracy while cutting cost. Beyond raw performance, VAR-based classifiers unlock two practical benefits out of the box:
+
+- **Explainability** — token-wise mutual information provides fine-grained visual explanations of predictions
+- **Class-incremental learning** — new classes can be added without any replay data
 
 ## Installation
 
