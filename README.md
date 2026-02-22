@@ -26,7 +26,8 @@ python eval.py \
   --model_ckpt ./weights/imagenet/var_d16.pth \
   --num_candidate_list "10,3,1" \
   --num_sample_list "1,1,3" \
-  --num_scale_list "6,10,10"
+  --num_scale_list "6,10,10" \
+  --synset_subset_path subsets/imagenet100.txt
 ```
 
 ## Comparative Analysis
