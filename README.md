@@ -96,6 +96,30 @@ python eval.py \
   --synset_subset_path subsets/imagenet100.txt
 ```
 
+## Visualization
+
+Generate explainability heatmaps showing which image regions drive classification decisions:
+
+```bash
+python vis.py \
+  --dataset imagenet \
+  --depth 16 \
+  --batch_size 1 \
+  --model_ckpt ./weights/imagenet/var_d16.pth \
+  --synset_subset_path subsets/imagenet100.txt
+```
+
+This produces 4-panel images saved to `vis_success/` and `vis_failure/` folders under `outputs_vis/`:
+
+| Panel | Description |
+|-------|-------------|
+| Input | Original image |
+| Panel 2 | log p(x\|y) − log p(x): true class vs unconditional |
+| Panel 3 | log p(x\|y_neg) − log p(x): best wrong class vs unconditional |
+| Panel 4 | log p(x\|y) − log p(x\|y_neg): true class vs best wrong class |
+
+Visualization requires `matplotlib` and `opencv-python` (included in `requirements.txt`).
+
 ## Comparative Analysis
 
 ![Comparative Analysis](assets/Comparative_analysis.png)
